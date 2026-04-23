@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environments
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local runtime outputs
+logs/
+paper_runtime/
+paper_runtime_ci/
+paper_runtime_test/
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/

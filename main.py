@@ -131,23 +131,43 @@ def run_backtest(strategy_name: str) -> int:
     return 0
 
 
-def run_paper(state_dir: str, strategy_name: str) -> int:
-    from live_paper_trading import PaperTradingEngine, SimulatedPaperBroker
+def run_paper(
+    state_dir: str,
+    strategy_name: str,
+    broker_name: str,
+    alpaca_api_key: str,
+    alpaca_secret_key: str,
+    alpaca_base_url: str,
+) -> int:
+    from live_paper_trading import AlpacaPaperBroker, PaperTradingEngine, SimulatedPaperBroker
     from risk_management import RiskConfig, RiskManager
     from strategy_signals import generate_sample_data
 
     _print_banner()
     print("▶ Mode: PAPER TRADING")
-    print(f"▶ Strategy: {_strategy_label(strategy_name)}\n")
-    LOGGER.info("Starting paper trading | strategy=%s | state_dir=%s", strategy_name, state_dir)
+    print(f"▶ Strategy: {_strategy_label(strategy_name)}")
+    print(f"▶ Broker: {broker_name}\n")
+    LOGGER.info(
+        "Starting paper trading | strategy=%s | broker=%s | state_dir=%s",
+        strategy_name,
+        broker_name,
+        state_dir,
+    )
 
     df = generate_sample_data(420)
     pcfg = SETTINGS.paper
-    broker = SimulatedPaperBroker(
-        starting_cash=pcfg.starting_cash,
-        commission_pct=pcfg.commission_pct,
-        slippage_pct=pcfg.slippage_pct,
-    )
+    if broker_name == "alpaca-paper":
+        broker = AlpacaPaperBroker(
+            api_key=alpaca_api_key,
+            secret_key=alpaca_secret_key,
+            base_url=alpaca_base_url,
+        )
+    else:
+        broker = SimulatedPaperBroker(
+            starting_cash=pcfg.starting_cash,
+            commission_pct=pcfg.commission_pct,
+            slippage_pct=pcfg.slippage_pct,
+        )
     risk_manager = RiskManager(
         RiskConfig(
             risk_per_trade_pct=0.01,
@@ -176,7 +196,12 @@ def run_paper(state_dir: str, strategy_name: str) -> int:
         path = report.state_dir / name
         if path.exists():
             print(f"  • {path}")
-    LOGGER.info("Paper trading complete | strategy=%s | state_dir=%s", strategy_name, state_dir)
+    LOGGER.info(
+        "Paper trading complete | strategy=%s | broker=%s | state_dir=%s",
+        strategy_name,
+        broker_name,
+        state_dir,
+    )
     return 0
 
 
@@ -264,6 +289,27 @@ def build_parser() -> argparse.ArgumentParser:
         default="momentum",
         help="Strategy to run in paper mode",
     )
+    paper.add_argument(
+        "--broker",
+        choices=("simulated", "alpaca-paper"),
+        default=SETTINGS.runtime.default_paper_broker,
+        help="Broker adapter for paper trading",
+    )
+    paper.add_argument(
+        "--alpaca-api-key",
+        default=SETTINGS.alpaca.api_key,
+        help="Alpaca API key (or set ALPACA_API_KEY env var)",
+    )
+    paper.add_argument(
+        "--alpaca-secret-key",
+        default=SETTINGS.alpaca.secret_key,
+        help="Alpaca secret key (or set ALPACA_SECRET_KEY env var)",
+    )
+    paper.add_argument(
+        "--alpaca-base-url",
+        default=SETTINGS.alpaca.base_url,
+        help="Alpaca API base URL",
+    )
 
     dashboard = sub.add_parser("dashboard", help="Launch the Phase 6 Streamlit dashboard")
     dashboard.add_argument(
@@ -316,7 +362,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "backtest":
         return run_backtest(args.strategy)
     if command == "paper":
-        return run_paper(args.state_dir, args.strategy)
+        return run_paper(
+            args.state_dir,
+            args.strategy,
+            args.broker,
+            args.alpaca_api_key,
+            args.alpaca_secret_key,
+            args.alpaca_base_url,
+        )
     if command == "dashboard":
         return run_dashboard(args.state_dir, args.server_port, args.server_address, args.headless)
     if command == "smoke-test":

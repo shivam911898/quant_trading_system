@@ -26,6 +26,10 @@ Defaults are production-safe for local paper runs and can be overridden with env
 - `QTS_PAPER_COMMISSION_PCT` (default: `0.001`)
 - `QTS_PAPER_SLIPPAGE_PCT` (default: `0.0005`)
 - `QTS_PAPER_WARMUP_BARS` (default: `220`)
+- `QTS_PAPER_BROKER` (default: `simulated`; options: `simulated`, `alpaca-paper`)
+- `ALPACA_API_KEY` (required for `alpaca-paper`)
+- `ALPACA_SECRET_KEY` (required for `alpaca-paper`)
+- `ALPACA_BASE_URL` (default: `https://paper-api.alpaca.markets`)
 
 ## Run
 Backtest:
@@ -36,6 +40,16 @@ python main.py backtest
 Paper trading:
 ```bash
 python main.py paper
+```
+
+Paper trading with Alpaca Paper API:
+```bash
+python main.py paper --broker alpaca-paper
+```
+
+Or pass credentials explicitly:
+```bash
+python main.py paper --broker alpaca-paper --alpaca-api-key <KEY> --alpaca-secret-key <SECRET>
 ```
 
 Dashboard:

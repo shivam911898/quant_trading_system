@@ -36,11 +36,15 @@ from typing import Dict, List, Optional, Type
 import json
 import warnings
 import io
+import logging
+import time
 from contextlib import redirect_stdout
 
 import pandas as pd
+import requests
 
 warnings.filterwarnings("ignore")
+LOGGER = logging.getLogger(__name__)
 
 try:
     from risk_management import RiskConfig, RiskDecision, RiskManager, PortfolioSnapshot
@@ -318,6 +322,217 @@ class SimulatedPaperBroker:
     def snapshot(self) -> PortfolioSnapshot:
         return PortfolioSnapshot(
             equity=self.equity(),
+            cash=float(self.cash),
+            gross_exposure=self.gross_exposure(),
+            net_exposure=self.net_exposure(),
+            open_positions=len(self.positions),
+            symbol_exposure={s: p.exposure() for s, p in self.positions.items()},
+        )
+
+
+class AlpacaPaperBroker:
+    """
+    Alpaca paper trading adapter implementing the broker interface expected by PaperTradingEngine.
+    """
+
+    def __init__(self, api_key: str, secret_key: str, base_url: str = "https://paper-api.alpaca.markets"):
+        if not api_key or not secret_key:
+            raise ValueError("Alpaca API credentials are required for alpaca-paper broker")
+
+        self.api_key = api_key.strip()
+        self.secret_key = secret_key.strip()
+        self.base_url = base_url.rstrip("/")
+        self.headers = {
+            "APCA-API-KEY-ID": self.api_key,
+            "APCA-API-SECRET-KEY": self.secret_key,
+            "Content-Type": "application/json",
+        }
+
+        self.cash = 0.0
+        self.positions: Dict[str, PaperPosition] = {}
+        self.orders: List[PaperOrder] = []
+        self.order_counter = 0
+        self._equity = 0.0
+        self._position_risk: Dict[str, dict] = {}
+
+        self._refresh_account()
+        self._refresh_positions()
+
+    def _request(self, method: str, path: str, payload: Optional[dict] = None) -> dict:
+        url = f"{self.base_url}{path}"
+        response = requests.request(method, url, headers=self.headers, json=payload, timeout=15)
+        if response.status_code >= 400:
+            raise RuntimeError(f"Alpaca API error {response.status_code}: {response.text}")
+        if response.text.strip() == "":
+            return {}
+        return response.json()
+
+    def _refresh_account(self) -> None:
+        account = self._request("GET", "/v2/account")
+        self.cash = float(account.get("cash", 0.0))
+        self._equity = float(account.get("equity", self.cash))
+
+    def _refresh_positions(self) -> None:
+        raw_positions = self._request("GET", "/v2/positions")
+        positions: Dict[str, PaperPosition] = {}
+        if isinstance(raw_positions, list):
+            for row in raw_positions:
+                symbol = str(row.get("symbol", "")).upper()
+                if not symbol:
+                    continue
+
+                qty_float = abs(float(row.get("qty", 0.0)))
+                qty = int(round(qty_float))
+                if qty <= 0:
+                    continue
+
+                side = str(row.get("side", "long")).lower()
+                entry = float(row.get("avg_entry_price", 0.0))
+                current = float(row.get("current_price", entry or 0.0))
+                risk = self._position_risk.get(symbol, {})
+
+                pos = PaperPosition(
+                    symbol=symbol,
+                    side="short" if side == "short" else "long",
+                    quantity=qty,
+                    entry_price=entry,
+                    entry_time=pd.Timestamp.utcnow(),
+                    stop_price=risk.get("stop_price"),
+                    target_price=risk.get("target_price"),
+                    current_price=current,
+                    unrealized_pnl=float(row.get("unrealized_pl", 0.0)),
+                )
+                positions[symbol] = pos
+
+        self.positions = positions
+
+    def _poll_order_fill_price(self, order_id: str, fallback_price: float) -> float:
+        filled_price = float(fallback_price)
+        for _ in range(5):
+            details = self._request("GET", f"/v2/orders/{order_id}")
+            status = str(details.get("status", "")).lower()
+            avg = details.get("filled_avg_price")
+            if avg is not None:
+                filled_price = float(avg)
+            if status in {"filled", "partially_filled", "new", "accepted", "done_for_day"}:
+                if status == "filled":
+                    return filled_price
+            time.sleep(0.4)
+        return filled_price
+
+    def submit_order(
+        self,
+        timestamp,
+        symbol: str,
+        side: str,
+        quantity: int,
+        market_price: float,
+        reason: str = "",
+        stop_price: Optional[float] = None,
+        target_price: Optional[float] = None,
+    ) -> PaperOrder:
+        ts = pd.Timestamp(timestamp)
+        self.order_counter += 1
+        normalized_symbol = symbol.upper()
+
+        if quantity <= 0:
+            order = PaperOrder(
+                self.order_counter,
+                ts,
+                normalized_symbol,
+                side,
+                quantity,
+                float(market_price),
+                float(market_price),
+                "rejected",
+                "quantity<=0",
+                0.0,
+            )
+            self.orders.append(order)
+            return order
+
+        api_side = "buy" if side in {"buy", "cover"} else "sell"
+        payload = {
+            "symbol": normalized_symbol,
+            "qty": str(int(quantity)),
+            "side": api_side,
+            "type": "market",
+            "time_in_force": "day",
+        }
+
+        try:
+            submitted = self._request("POST", "/v2/orders", payload)
+            alpaca_order_id = str(submitted.get("id", ""))
+            filled_price = float(market_price)
+            if alpaca_order_id:
+                filled_price = self._poll_order_fill_price(alpaca_order_id, fallback_price=float(market_price))
+
+            status = "filled"
+            if side in {"buy", "short"}:
+                self._position_risk[normalized_symbol] = {
+                    "stop_price": stop_price,
+                    "target_price": target_price,
+                }
+            elif side in {"sell", "cover"}:
+                self._position_risk.pop(normalized_symbol, None)
+
+            self._refresh_account()
+            self._refresh_positions()
+
+            order = PaperOrder(
+                self.order_counter,
+                ts,
+                normalized_symbol,
+                side,
+                int(quantity),
+                float(market_price),
+                filled_price,
+                status,
+                reason,
+                0.0,
+            )
+        except Exception as exc:
+            LOGGER.exception("Alpaca order failed")
+            order = PaperOrder(
+                self.order_counter,
+                ts,
+                normalized_symbol,
+                side,
+                int(quantity),
+                float(market_price),
+                float(market_price),
+                "rejected",
+                str(exc),
+                0.0,
+            )
+
+        self.orders.append(order)
+        return order
+
+    def mark_to_market(self, price_map: Dict[str, float]):
+        _ = price_map
+        self._refresh_account()
+        self._refresh_positions()
+
+    def gross_exposure(self) -> float:
+        return float(sum(pos.exposure() for pos in self.positions.values()))
+
+    def net_exposure(self) -> float:
+        total = 0.0
+        for pos in self.positions.values():
+            sign = 1 if pos.side == "long" else -1
+            total += sign * pos.exposure()
+        return float(total)
+
+    def equity(self) -> float:
+        self._refresh_account()
+        return float(self._equity)
+
+    def snapshot(self) -> PortfolioSnapshot:
+        self._refresh_account()
+        self._refresh_positions()
+        return PortfolioSnapshot(
+            equity=float(self._equity),
             cash=float(self.cash),
             gross_exposure=self.gross_exposure(),
             net_exposure=self.net_exposure(),

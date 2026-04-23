@@ -52,8 +52,16 @@ class RuntimeConfig:
     log_level: str = "INFO"
     log_file: str = "logs/system.log"
     default_state_dir: str = "paper_runtime"
+    default_paper_broker: str = "simulated"
     server_port: int = 8501
     server_address: str = "127.0.0.1"
+
+
+@dataclass(frozen=True)
+class AlpacaConfig:
+    api_key: str = ""
+    secret_key: str = ""
+    base_url: str = "https://paper-api.alpaca.markets"
 
 
 @dataclass(frozen=True)
@@ -61,6 +69,7 @@ class TradingSystemConfig:
     runtime: RuntimeConfig
     backtest: BacktestConfig
     paper: PaperConfig
+    alpaca: AlpacaConfig
 
 
 def load_settings() -> TradingSystemConfig:
@@ -68,6 +77,7 @@ def load_settings() -> TradingSystemConfig:
         log_level=_env_str("QTS_LOG_LEVEL", "INFO").upper(),
         log_file=_env_str("QTS_LOG_FILE", "logs/system.log"),
         default_state_dir=_env_str("QTS_STATE_DIR", "paper_runtime"),
+        default_paper_broker=_env_str("QTS_PAPER_BROKER", "simulated").lower(),
         server_port=_env_int("QTS_DASHBOARD_PORT", 8501),
         server_address=_env_str("QTS_DASHBOARD_HOST", "127.0.0.1"),
     )
@@ -88,4 +98,10 @@ def load_settings() -> TradingSystemConfig:
         warmup_bars=_env_int("QTS_PAPER_WARMUP_BARS", 220),
     )
 
-    return TradingSystemConfig(runtime=runtime, backtest=backtest, paper=paper)
+    alpaca = AlpacaConfig(
+        api_key=_env_str("ALPACA_API_KEY", ""),
+        secret_key=_env_str("ALPACA_SECRET_KEY", ""),
+        base_url=_env_str("ALPACA_BASE_URL", "https://paper-api.alpaca.markets"),
+    )
+
+    return TradingSystemConfig(runtime=runtime, backtest=backtest, paper=paper, alpaca=alpaca)

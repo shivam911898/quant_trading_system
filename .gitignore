@@ -22,3 +22,6 @@ paper_runtime_test/
 .DS_Store
 .idea/
 .vscode/
+
+# Local secrets
+.env.local

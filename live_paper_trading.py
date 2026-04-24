@@ -341,7 +341,10 @@ class AlpacaPaperBroker:
 
         self.api_key = api_key.strip()
         self.secret_key = secret_key.strip()
-        self.base_url = base_url.rstrip("/")
+        normalized_base = base_url.strip().rstrip("/")
+        if normalized_base.endswith("/v2"):
+            normalized_base = normalized_base[: -len("/v2")]
+        self.base_url = normalized_base
         self.headers = {
             "APCA-API-KEY-ID": self.api_key,
             "APCA-API-SECRET-KEY": self.secret_key,

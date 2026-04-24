@@ -27,6 +27,7 @@ import argparse
 import json
 import sys
 import time
+from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -41,6 +42,8 @@ except ImportError as exc:
 # ══════════════════════════════════════════════════════════════
 #  1.  DATA LOADING
 # ══════════════════════════════════════════════════════════════
+
+CONTROL_COMMANDS_FILE = "control_commands.jsonl"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -75,6 +78,19 @@ def compute_drawdown(equity_df: pd.DataFrame) -> pd.DataFrame:
     out["rolling_peak"] = out["equity"].cummax()
     out["drawdown_pct"] = (out["equity"] - out["rolling_peak"]) / out["rolling_peak"] * 100
     return out
+
+
+def enqueue_control_command(state_dir: Path, command: str, note: str = "") -> None:
+    state_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "source": "dashboard",
+        "command": command,
+        "note": note.strip(),
+    }
+    line = json.dumps(payload, separators=(",", ":")) + "\n"
+    with (state_dir / CONTROL_COMMANDS_FILE).open("a", encoding="utf-8") as fh:
+        fh.write(line)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -212,6 +228,30 @@ def main():
         st.header("Controls")
         refresh = st.checkbox("Auto-refresh every 5 seconds", value=False)
         st.caption("Turn this on after Phase 5 is writing files continuously.")
+
+        st.divider()
+        st.subheader("Trading Controls")
+        armed = st.checkbox("Enable control actions", value=False)
+        note = st.text_input("Operator note (optional)", value="")
+        if not armed:
+            st.caption("Enable control actions to send commands to the trading engine.")
+
+        c1, c2 = st.columns(2)
+        if c1.button("⏸ Pause", use_container_width=True, disabled=not armed):
+            enqueue_control_command(state_dir, "PAUSE_TRADING", note=note)
+            st.success("Pause command queued")
+        if c2.button("▶ Resume", use_container_width=True, disabled=not armed):
+            enqueue_control_command(state_dir, "RESUME_TRADING", note=note)
+            st.success("Resume command queued")
+
+        c3, c4 = st.columns(2)
+        if c3.button("🧹 Cancel Pending", use_container_width=True, disabled=not armed):
+            enqueue_control_command(state_dir, "CANCEL_PENDING", note=note)
+            st.success("Cancel-pending command queued")
+        if c4.button("🛑 Flatten All", use_container_width=True, disabled=not armed):
+            enqueue_control_command(state_dir, "FLATTEN_ALL", note=note)
+            st.warning("Flatten-all command queued")
+
         st.divider()
         st.write("Expected producer:")
         st.code("python live_paper_trading.py")

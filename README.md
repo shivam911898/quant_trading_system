@@ -57,6 +57,15 @@ Dashboard:
 python main.py dashboard
 ```
 
+Dashboard trade controls (when producer is running):
+
+- Pause trading
+- Resume trading
+- Cancel pending next-open signals
+- Flatten all open positions
+
+These controls enqueue commands into the runtime state folder and are consumed by the paper trading engine on the next processed bar.
+
 Smoke test:
 ```bash
 python main.py smoke-test

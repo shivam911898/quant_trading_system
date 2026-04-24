@@ -45,6 +45,7 @@ import requests
 
 warnings.filterwarnings("ignore")
 LOGGER = logging.getLogger(__name__)
+CONTROL_COMMANDS_FILE = "control_commands.jsonl"
 
 try:
     from risk_management import RiskConfig, RiskDecision, RiskManager, PortfolioSnapshot
@@ -576,6 +577,7 @@ class PaperTradingEngine:
         self.alerts: List[dict] = []
         self.position_snapshots: List[dict] = []
         self.pending_signals: Dict[str, PendingSignal] = {}
+        self.trading_paused: bool = False
 
     def _log_alert(self, timestamp, level: str, message: str):
         self.alerts.append({
@@ -596,6 +598,8 @@ class PaperTradingEngine:
         return payload
 
     def _queue_signal_for_next_open(self, timestamp, signal_row: pd.Series):
+        if self.trading_paused:
+            return
         symbol = str(signal_row.get("symbol", "UNKNOWN"))
         signal = int(signal_row.get("signal", 0))
         if signal == 0:
@@ -639,6 +643,7 @@ class PaperTradingEngine:
                 "gross_exposure": round(self.broker.gross_exposure(), 2),
                 "net_exposure": round(self.broker.net_exposure(), 2),
                 "open_positions": len(self.broker.positions),
+                "trading_paused": self.trading_paused,
             },
             "risk": self.risk_manager.summary(),
             "positions": [pos.as_dict() for pos in self.broker.positions.values()],
@@ -646,6 +651,54 @@ class PaperTradingEngine:
             "last_alert": self.alerts[-1] if self.alerts else None,
         }
         (self.state_dir / "system_state.json").write_text(json.dumps(state, indent=2))
+
+    def _consume_control_commands(self) -> List[dict]:
+        path = self.state_dir / CONTROL_COMMANDS_FILE
+        if not path.exists():
+            return []
+
+        commands: List[dict] = []
+        for line in path.read_text().splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                payload = json.loads(stripped)
+                if isinstance(payload, dict):
+                    commands.append(payload)
+            except json.JSONDecodeError:
+                self._log_alert(pd.Timestamp.utcnow(), "WARN", f"Invalid control command payload: {stripped[:80]}")
+
+        path.write_text("")
+        return commands
+
+    def _flatten_all_positions(self, timestamp, row: pd.Series):
+        execution_price = float(row.get("open", row["close"]))
+        for symbol, pos in list(self.broker.positions.items()):
+            side = "sell" if pos.side == "long" else "cover"
+            self._submit_exit(timestamp, symbol, side, pos.quantity, execution_price, "manual_flatten_all")
+
+    def _process_control_commands(self, timestamp, row: pd.Series):
+        commands = self._consume_control_commands()
+        for command in commands:
+            cmd = str(command.get("command", "")).strip().upper()
+            source = str(command.get("source", "unknown"))
+
+            if cmd == "PAUSE_TRADING":
+                self.trading_paused = True
+                self._log_alert(timestamp, "WARN", f"Control command from {source}: trading paused")
+            elif cmd == "RESUME_TRADING":
+                self.trading_paused = False
+                self._log_alert(timestamp, "INFO", f"Control command from {source}: trading resumed")
+            elif cmd == "CANCEL_PENDING":
+                dropped = len(self.pending_signals)
+                self.pending_signals.clear()
+                self._log_alert(timestamp, "INFO", f"Control command from {source}: cleared {dropped} pending signals")
+            elif cmd == "FLATTEN_ALL":
+                self._flatten_all_positions(timestamp, row)
+                self._log_alert(timestamp, "WARN", f"Control command from {source}: flatten-all executed")
+            else:
+                self._log_alert(timestamp, "WARN", f"Unknown control command from {source}: {cmd}")
 
     def _submit_exit(self, timestamp, symbol: str, side: str, quantity: int, price: float, reason: str):
         order = self.broker.submit_order(timestamp, symbol, side, quantity, price, reason=reason)
@@ -788,13 +841,20 @@ class PaperTradingEngine:
         row = history_df.iloc[-1]
         timestamp = history_df.index[-1]
 
-        self._execute_pending_signal_at_open(timestamp, row)
+        self._process_control_commands(timestamp, row)
+
+        if not self.trading_paused:
+            self._execute_pending_signal_at_open(timestamp, row)
         self._check_exit_rules(timestamp, row)
         self._record_snapshot(timestamp, row)
 
         halted, reason = self.risk_manager.update_equity(timestamp, self.broker.equity())
         if halted:
             self._log_alert(timestamp, "ERROR", reason)
+            self._export_state()
+            return
+
+        if self.trading_paused:
             self._export_state()
             return
 

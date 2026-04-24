@@ -62,6 +62,11 @@ Smoke test:
 python main.py smoke-test
 ```
 
+Validate Alpaca paper credentials:
+```bash
+python main.py check-alpaca
+```
+
 ## Tests
 ```bash
 pytest

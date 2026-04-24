@@ -19,6 +19,8 @@ import sys
 from pathlib import Path
 from typing import Sequence, Type
 
+import requests
+
 from app_config import TradingSystemConfig, load_settings
 from app_logging import setup_logging
 
@@ -262,6 +264,49 @@ def run_smoke_test() -> int:
     return int(completed.returncode)
 
 
+def _normalize_alpaca_base_url(base_url: str) -> str:
+    normalized = base_url.strip().rstrip("/")
+    if normalized.endswith("/v2"):
+        normalized = normalized[: -len("/v2")]
+    return normalized
+
+
+def run_check_alpaca(api_key: str, secret_key: str, base_url: str) -> int:
+    if not api_key or not secret_key:
+        print("❌ Missing Alpaca credentials.")
+        print("   Set ALPACA_API_KEY and ALPACA_SECRET_KEY (or pass via CLI flags).")
+        return 2
+
+    normalized_base = _normalize_alpaca_base_url(base_url)
+    headers = {
+        "APCA-API-KEY-ID": api_key,
+        "APCA-API-SECRET-KEY": secret_key,
+    }
+
+    _print_banner()
+    print("▶ Mode: CHECK ALPACA\n")
+    print(f"Base URL: {normalized_base}")
+
+    try:
+        response = requests.get(f"{normalized_base}/v2/account", headers=headers, timeout=15)
+    except Exception as exc:
+        print(f"❌ Connection failed: {exc}")
+        return 1
+
+    if response.status_code >= 400:
+        print(f"❌ Auth/API check failed with status {response.status_code}")
+        print(response.text[:400])
+        return 1
+
+    account = response.json()
+    print("✅ Alpaca credentials are valid.")
+    print(f"Account Number: {account.get('account_number', 'N/A')}")
+    print(f"Status: {account.get('status', 'N/A')}")
+    print(f"Buying Power: {account.get('buying_power', 'N/A')}")
+    print(f"Paper Endpoint: {normalized_base}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Unified runner for the quant trading system",
@@ -331,6 +376,23 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard.add_argument("--headless", action="store_true", help="Run Streamlit in headless mode")
 
     sub.add_parser("smoke-test", help="Run the cross-phase integration smoke test")
+
+    check_alpaca = sub.add_parser("check-alpaca", help="Validate Alpaca paper API credentials")
+    check_alpaca.add_argument(
+        "--alpaca-api-key",
+        default=SETTINGS.alpaca.api_key,
+        help="Alpaca API key (or ALPACA_API_KEY env var)",
+    )
+    check_alpaca.add_argument(
+        "--alpaca-secret-key",
+        default=SETTINGS.alpaca.secret_key,
+        help="Alpaca secret key (or ALPACA_SECRET_KEY env var)",
+    )
+    check_alpaca.add_argument(
+        "--alpaca-base-url",
+        default=SETTINGS.alpaca.base_url,
+        help="Alpaca API base URL",
+    )
     return parser
 
 
@@ -374,6 +436,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_dashboard(args.state_dir, args.server_port, args.server_address, args.headless)
     if command == "smoke-test":
         return run_smoke_test()
+    if command == "check-alpaca":
+        return run_check_alpaca(args.alpaca_api_key, args.alpaca_secret_key, args.alpaca_base_url)
 
     parser.print_help()
     return 1

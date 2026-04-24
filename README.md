@@ -5,7 +5,7 @@
 cd quant_trading_system
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
 ## Environment configuration (optional)
@@ -84,6 +84,26 @@ GitHub Actions workflow is available at `.github/workflows/ci.yml` and enforces 
 - `ruff check .`
 - `mypy`
 - `pytest`
+
+## Streamlit Cloud deployment
+Use these settings in Streamlit Cloud:
+
+- Repository: `shivam911898/quant_trading_system`
+- Branch: `main`
+- Main file path: `monitoring_dashboard.py`
+
+This repo includes:
+
+- `requirements.txt` (runtime-only dependencies for deployment)
+- `requirements-dev.txt` (dev + CI dependencies)
+- `runtime.txt` (pins Python runtime for cloud compatibility)
+
+If you see **"Error running app"** in Streamlit Cloud:
+
+1. Confirm the main file is exactly `monitoring_dashboard.py`
+2. Open app logs in Streamlit Cloud and check for install/runtime traceback
+3. Reboot app after clearing cache from Streamlit Cloud settings
+4. Verify your branch is `main` and latest commit is deployed
 
 ## Strategy selection
 ```bash
